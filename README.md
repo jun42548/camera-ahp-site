@@ -1,3 +1,4 @@
 # 카메라 구매 정보탐색 방식 AHP 설문
 
-연구 설문 페이지입니다. 안내받은 이메일과 참여 코드로 들어가 응답해 주세요.
+- 설문: https://jun42548.github.io/camera-ahp-site/ (안내받은 이메일과 참여 코드로 응답)
+- 관리자: https://jun42548.github.io/camera-ahp-site/admin.html (등록된 관리자만 로그인)
