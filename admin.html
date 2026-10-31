@@ -932,7 +932,7 @@ function faSaveSoon(){clearTimeout(FA.saveT);FA.saveT=setTimeout(faSaveNow,400)}
 window.addEventListener('beforeunload',function(){faSaveNow()});
 function adTop(){topRight.innerHTML='<span>웹 설문 · Supabase</span>'}
 function faHead(){
-  var P=AD.P,tabs=[['model','1. 모델 만들기'],['send','2. 링크 · 코드 · 진행 현황'],['collect','3. 결과 (DB)']];
+  var P=AD.P,tabs=[['model','1. 모델 만들기'],['send','2. 링크 · 코드 · 진행 현황'],['collect','3. 결과 (DB)'],['sim','4. 시뮬레이터']];
   return '<div class="fa-head"><div><div class="eyebrow">AHP 관리자 · 웹 설문</div><h1>'+esc(P.name||'새 설문')+'</h1></div><div class="toolbar" style="margin:0">'+
     '<button class="btn sm" data-act="faPreview">설문지 미리보기</button><button class="btn sm" data-act="faProjSave" title="모델과 받은 응답을 파일로 보관">관리 파일 저장</button><label class="btn sm">관리 파일 열기<input type="file" accept=".json,application/json" data-ch="faProjOpen" hidden></label><button class="btn sm ghost danger" data-act="faNew">새 설문 시작</button></div></div>'+
     '<div class="tabs">'+tabs.map(function(t){return '<button data-act="faTab" data-v="'+t[0]+'" class="'+(FA.tab===t[0]?'on':'')+'">'+t[1]+(t[0]==='collect'&&FA.resp.length?' <span class="tag">'+FA.resp.length+'</span>':'')+'</button>'}).join('')+'</div>';
@@ -1299,6 +1299,112 @@ HOOK.resultsHead=function(P,C){
     (FA.resp.length?'<p class="muted" style="margin:0 0 12px">불러온 응답 '+AD.resp.length+'명 · 통합에 포함 '+C.inc.length+'명</p>':'');
 };
 ACT.respDel=function(t){if(!armed(t))return;FA.resp=FA.resp.filter(function(r){return r.evaluator!==t.dataset.e});FA.report=null;faSaveNow();faRender()};
+/* ================= 4. 시뮬레이터 (가상 응답) =================
+   페르소나별 기준 가중치·대안 선호를 바탕으로 쌍대비교 응답을 만들어 결과를 미리 봅니다.
+   가상 응답은 이 브라우저에서만 계산하며 DB의 실제 응답과 섞이지 않습니다. */
+var SIM={resp:[],group:'all',ready:false};
+var SIM_AGES=['20대','30대','40대','50대 이상'],SIM_GENDERS=['남성','여성','응답 안 함'],SIM_AIF=['거의 안 씀','월 1~3번','주 1~3번','거의 매일'],
+    SIM_EXP=['1년 미만','1~3년','3~5년','5년 이상'],SIM_NOISE=[[0.25,'낮음'],[0.4,'보통'],[0.55,'높음'],[0.7,'매우 높음']];
+/* 하위기준별 대안 기본 인식 (AI 상담, 온라인 후기·커뮤니티, 오프라인 매장) — 계층 순서의 8개 하위기준 */
+var SIM_BASE=[[.25,.35,.40],[.40,.35,.25],[.50,.30,.20],[.50,.35,.15],[.40,.25,.35],[.45,.15,.40],[.35,.45,.20],[.20,.40,.40]];
+function simDefaults(){
+  // name, 나이, 성별, 경력, AI빈도, [신뢰,편리,맞춤,경제], [각 기준 안 첫 하위기준 비율], [AI,온라인,오프라인 배율], 흔들림
+  var rows=[
+    ['20대 대학생 · 사진 동아리, AI 얼리어답터',0,0,1,3,[.20,.35,.30,.15],[.6,.6,.6,.7],[1.6,1.0,0.8],.4],
+    ['20대 사회초년생, 가성비 실속형',0,1,0,2,[.20,.25,.15,.40],[.5,.5,.5,.6],[1.2,1.2,0.8],.55],
+    ['20대 영상 크리에이터, 맞춤 상담형',0,0,2,3,[.20,.20,.45,.15],[.6,.5,.6,.5],[1.4,1.1,1.0],.25],
+    ['20대 여행 사진 입문, 편의 중시형',0,1,0,2,[.20,.40,.25,.15],[.5,.6,.6,.6],[1.3,1.0,0.9],.55],
+    ['20대 카메라 커뮤니티 고수',0,0,2,1,[.35,.15,.20,.30],[.5,.5,.5,.6],[0.8,1.6,0.9],.25],
+    ['20대 오프라인 체험파',0,1,1,1,[.30,.15,.35,.20],[.6,.5,.4,.5],[0.8,1.0,1.6],.4],
+    ['30대 직장인, 신뢰 꼼꼼형',1,0,3,2,[.45,.15,.20,.20],[.6,.5,.6,.6],[0.9,1.2,1.1],.25],
+    ['30대 육아 · 가족 사진, 시간 실용형',1,1,1,2,[.20,.45,.20,.15],[.5,.6,.6,.5],[1.3,1.0,0.8],.4],
+    ['30대 개발자, AI 얼리어답터',1,0,2,3,[.30,.30,.25,.15],[.7,.6,.5,.6],[1.7,1.0,0.7],.25],
+    ['30대 가성비 실속형',1,0,2,1,[.20,.15,.15,.50],[.5,.5,.5,.7],[1.0,1.4,0.9],.4],
+    ['30대 웨딩 · 인물 사진, 맞춤 상담형',1,1,3,1,[.30,.10,.45,.15],[.6,.5,.5,.4],[0.9,1.0,1.4],.25],
+    ['30대 아웃도어 동호회, 커뮤니티형',1,0,3,0,[.40,.15,.20,.25],[.6,.5,.6,.6],[0.6,1.6,1.0],.4],
+    ['40대 관리자급, 신뢰형',2,0,3,1,[.45,.15,.25,.15],[.6,.5,.5,.5],[0.9,1.1,1.2],.25],
+    ['40대 아이 행사 사진, 편의형',2,1,1,1,[.25,.40,.20,.15],[.5,.6,.6,.5],[1.0,1.0,1.2],.55],
+    ['40대 풍경 사진 장비 마니아',2,0,3,2,[.40,.10,.30,.20],[.7,.5,.5,.6],[1.1,1.4,1.0],.25],
+    ['40대 가성비 비교형',2,0,2,2,[.25,.20,.10,.45],[.5,.5,.5,.6],[1.2,1.3,0.9],.4],
+    ['40대 매장 상담 선호',2,1,2,0,[.30,.15,.35,.20],[.5,.4,.5,.5],[0.6,0.9,1.7],.4],
+    ['50대 이상 은퇴 후 취미, 매장 신뢰형',3,0,1,0,[.40,.15,.30,.15],[.6,.4,.5,.5],[0.6,0.9,1.7],.55],
+    ['50대 이상 사진 강사, 전문가형',3,0,3,1,[.45,.10,.25,.20],[.7,.5,.6,.6],[0.8,1.3,1.2],.25],
+    ['50대 이상 AI 배우는 시니어',3,1,1,2,[.30,.25,.30,.15],[.5,.5,.6,.5],[1.3,0.9,1.2],.7]];
+  return rows.map(function(r,i){return {code:'SIM'+String(i+1).padStart(2,'0'),name:r[0],age:r[1],gender:r[2],exp:r[3],aif:r[4],w:r[5].slice(),share:r[6].slice(),mult:r[7].slice(),noise:r[8]}});
+}
+function simState(){var P=AD.P;P.sim=P.sim||{};if(!Array.isArray(P.sim.personas)||!P.sim.personas.length)P.sim.personas=simDefaults();if(!P.sim.seed)P.sim.seed=31;return P.sim}
+function simRand(seed){var a=seed>>>0;return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return ((t^t>>>14)>>>0)/4294967296}}
+function simOdd(r){var x=Math.abs(Math.log(r)),best=1;[1,3,5,7,9].forEach(function(k){if(Math.abs(Math.log(k)-x)<Math.abs(Math.log(best)-x))best=k});return r>=1?best:1/best}
+function simGenerate(){
+  var P=AD.P,S=simState(),M=matricesOf(P),rnd=simRand(S.seed),crits=P.root.children,leaves=[];
+  (function lf(n){if(!n.children.length)leaves.push(n);else n.children.forEach(lf)})(P.root);
+  var normal=function(){var u=1-rnd(),v=rnd();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)};
+  SIM.resp=S.personas.map(function(p){
+    var J={},ageAI=p.age===0?1.1:p.age===3?0.85:1,ageOff=p.age===3?1.15:1;
+    var weightOf=function(m,it){
+      if(m.type==='alt'){var li=leaves.indexOf(m.node),ai=P.alts.indexOf(it),b=(SIM_BASE[li]||[1,1,1])[ai];if(b==null)b=1;
+        var mult=[(p.mult[0]||1)*ageAI,p.mult[1]||1,(p.mult[2]||1)*ageOff][ai];return b*(mult==null?1:mult)}
+      if(m.node===P.root){var ci=crits.indexOf(it);return Math.max(0.01,+p.w[ci]||0.25)}
+      var ci2=crits.indexOf(m.node),sh=+p.share[ci2];if(!(sh>0&&sh<1))sh=0.5;return m.node.children.indexOf(it)===0?sh:(1-sh)/Math.max(1,m.node.children.length-1)};
+    var lim=+P.crLimit>0?+P.crLimit:0.1,sig=+p.noise||0.4,fix=Math.max(0.3,1-sig*0.7);
+    var draw=function(m,sd){var jm={};pairsOf(m).forEach(function(pr){var r=weightOf(m,pr[0])/weightOf(m,pr[1])*Math.exp(sd*normal());jm[pr[0].id+'|'+pr[1].id]=simOdd(r)});return jm};
+    M.forEach(function(m){var jm=draw(m,sig),k=0;
+      // 설문의 '다시 확인' 단계: 일관성이 낮으면 일부 응답자는 판단을 다시 고친다 (흔들림이 클수록 덜 고침)
+      while(m.items.length>2&&k<3){var pr=priority(m,jm);if(!pr||pr.cr<=lim||rnd()>fix)break;k++;jm=draw(m,sig*Math.pow(0.5,k))}
+      J[m.key]=jm});
+    return {evaluator:p.code,judgments:J,updated:new Date().toISOString(),sim:true};
+  });
+  SIM.ready=true;
+}
+function simSel(code,inc){var k=AD.P.id+'|'+code;AD.sel[k]=AD.sel[k]||{include:true,weight:1};AD.sel[k].include=inc}
+function simGroupDefs(){return [['all','전체',function(){return true}]]
+  .concat(SIM_AGES.map(function(a,i){return ['age'+i,a,function(p){return p.age===i}]}))
+  .concat([['aiHi','AI 자주 씀 (주 1회 이상)',function(p){return p.aif>=2}],['aiLo','AI 드물게 씀 (월 3회 이하)',function(p){return p.aif<=1}]])}
+ACT.simGroup=function(t){var S=simState(),d=simGroupDefs().filter(function(x){return x[0]===t.dataset.g})[0];if(!d)return;SIM.group=d[0];
+  S.personas.forEach(function(p){simSel(p.code,d[2](p))});rerenderKeep()};
+ACT.simRun=function(){simGenerate();SIM.group='all';simState().personas.forEach(function(p){simSel(p.code,true)});faSaveSoon();faRender();toast('가상 응답 '+SIM.resp.length+'명을 다시 만들었습니다.')};
+ACT.simSeed=function(){simState().seed=Math.floor(Math.random()*1e6)+1;ACT.simRun()};
+ACT.simAdd=function(){var S=simState(),n=1;while(S.personas.some(function(p){return p.code==='SIM'+String(n).padStart(2,'0')}))n++;
+  S.personas.push({code:'SIM'+String(n).padStart(2,'0'),name:'새 페르소나',age:1,gender:0,exp:1,aif:1,w:[.25,.25,.25,.25],share:[.5,.5,.5,.5],mult:[1,1,1],noise:.4});ACT.simRun()};
+ACT.simDel=function(t){if(!armed(t))return;var S=simState();S.personas=S.personas.filter(function(p){return p.code!==t.dataset.c});ACT.simRun()};
+ACT.simReset=function(t){if(!armed(t))return;var S=simState();S.personas=simDefaults();S.seed=31;ACT.simRun()};
+IN.simF=function(t){var S=simState(),p=S.personas.filter(function(x){return x.code===t.dataset.c})[0];if(!p)return;var f=t.dataset.f,v=t.value;
+  if(f==='name')p.name=v;else if(/^(w|mult|share)\d$/.test(f)){var arr=f.replace(/\d$/,''),i=+f.slice(-1),x=parseFloat(v);if(isFinite(x)&&x>=0)p[arr][i]=x}
+  else{var y=parseFloat(v);if(isFinite(y))p[f]=y}
+  SIM.dirty=true;var b=document.getElementById('simApply');if(b)b.classList.add('primary');faSaveSoon()};
+CH.simF=IN.simF;
+ACT.simCsv=function(){var S=simState(),P=AD.P,C=AD.C,head=['코드','페르소나','연령','성별','촬영 경력','AI 이용 빈도','신뢰성','편리성','맞춤성','경제성','AI 배율','온라인 배율','오프라인 배율','흔들림','최대 CR'];
+  var rows=[head].concat(S.personas.map(function(p){var st=AD.stats&&AD.stats[p.code];return [p.code,p.name,SIM_AGES[p.age],SIM_GENDERS[p.gender],SIM_EXP[p.exp],SIM_AIF[p.aif]].concat(p.w,p.mult,[p.noise,st&&st.maxCR!=null?st.maxCR.toFixed(3):''])}));
+  var csv='﻿'+rows.map(function(l){return l.map(function(c){c=String(c==null?'':c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c}).join(',')}).join('\r\n');
+  download('가상응답_페르소나_'+safeName(P.name)+'.csv',csv,'text/csv');toast('페르소나 CSV를 저장했습니다.')};
+function simSelect(code,f,val,opts){return '<select data-ch="simF" data-c="'+esc(code)+'" data-f="'+f+'" aria-label="'+f+'">'+opts.map(function(o,i){var v=Array.isArray(o)?o[0]:i,l=Array.isArray(o)?o[1]:o;return '<option value="'+v+'"'+(+val===+v?' selected':'')+'>'+esc(l)+'</option>'}).join('')+'</select>'}
+function simNum(code,f,val,step){return '<input type="number" min="0" step="'+(step||0.05)+'" data-in="simF" data-c="'+esc(code)+'" data-f="'+f+'" value="'+val+'" aria-label="'+f+'">'}
+function simHead(P,C){
+  var S=simState(),cn=P.root.children.map(function(c){return c.name}),an=P.alts.map(function(a){return a.name.split(' ')[0]});
+  var rows=S.personas.map(function(p){var st=AD.stats&&AD.stats[p.code];return '<tr><td><b>'+esc(p.code)+'</b></td><td><input type="text" data-in="simF" data-c="'+esc(p.code)+'" data-f="name" value="'+esc(p.name)+'" class="sim-name"></td>'+
+    '<td>'+simSelect(p.code,'age',p.age,SIM_AGES)+'</td><td>'+simSelect(p.code,'gender',p.gender,SIM_GENDERS)+'</td><td>'+simSelect(p.code,'exp',p.exp,SIM_EXP)+'</td><td>'+simSelect(p.code,'aif',p.aif,SIM_AIF)+'</td>'+
+    [0,1,2,3].map(function(i){return '<td>'+simNum(p.code,'w'+i,p.w[i])+'</td>'}).join('')+[0,1,2].map(function(i){return '<td>'+simNum(p.code,'mult'+i,p.mult[i],0.1)+'</td>'}).join('')+
+    '<td>'+simSelect(p.code,'noise',p.noise,SIM_NOISE)+'</td><td>'+(st&&st.maxCR!=null?'<span class="tag '+(st.maxCR<=0.1?'ok':'bad')+'">'+st.maxCR.toFixed(2)+'</span>':'–')+'</td>'+
+    '<td><button class="btn sm ghost danger" data-act="simDel" data-c="'+esc(p.code)+'">빼기</button></td></tr>'}).join('');
+  var cnt=function(f){var c={};S.personas.forEach(function(p){c[f(p)]=(c[f(p)]||0)+1});return c},ac=cnt(function(p){return p.age}),hi=S.personas.filter(function(p){return p.aif>=2}).length;
+  return faHead()+'<style>.sim-wrap{overflow-x:auto}.sim-tbl{font-size:13px;min-width:1250px}.sim-tbl td,.sim-tbl th{padding:4px 5px;white-space:nowrap}.sim-tbl input[type=number]{width:62px;padding:4px 6px}.sim-tbl select{width:auto;padding:4px 6px}.sim-tbl .sim-name{width:230px;padding:4px 6px}</style>'+
+    '<div class="note warn"><b>가상 응답입니다.</b> 페르소나 설정으로 만든 응답이라 실제 조사 결과가 아닙니다. DB의 실제 응답과 섞이지 않으며, 보고서에는 ‘시뮬레이션’으로만 써 주세요. 분석 흐름 점검, 표본 크기·집단 차이·민감도 미리 보기에 씁니다.</div>'+
+    '<div class="card"><div class="toolbar" style="margin:0 0 8px"><h3 style="margin:0">페르소나 '+S.personas.length+'명</h3><div class="grow"></div>'+
+      '<button class="btn sm" id="simApply" data-act="simRun">고친 내용으로 다시 계산</button><button class="btn sm" data-act="simSeed" title="같은 페르소나로 판단의 흔들림만 새로 뽑습니다">흔들림 새로 뽑기</button><button class="btn sm" data-act="simAdd">페르소나 추가</button><button class="btn sm" data-act="simCsv">CSV</button><button class="btn sm ghost danger" data-act="simReset">기본 20명으로 되돌리기</button></div>'+
+      '<p class="small muted" style="margin:0 0 8px">연령 '+SIM_AGES.map(function(a,i){return a+' '+(ac[i]||0)+'명'}).join(' · ')+' / AI 자주 씀 '+hi+'명 · 드물게 씀 '+(S.personas.length-hi)+'명 · 흔들림 시드 '+S.seed+'</p>'+
+      '<div class="sim-wrap"><table class="tbl sim-tbl"><tr><th>코드</th><th>페르소나</th><th>연령</th><th>성별</th><th>촬영 경력</th><th>AI 이용 빈도</th>'+cn.map(function(n){return '<th>'+esc(n)+'</th>'}).join('')+an.map(function(n){return '<th>'+esc(n)+' 선호</th>'}).join('')+'<th>흔들림</th><th>최대 CR</th><th></th></tr>'+rows+'</table></div>'+
+      '<p class="small muted" style="margin:8px 0 0">기준 칸은 그 사람이 기준을 얼마나 중시하는지(합이 1이 아니어도 비율로 계산), 선호 칸은 세 방식에 대한 인식 배율(1 = 보통)입니다. 흔들림이 클수록 판단이 들쭉날쭉해져 CR이 높아지고, 설문의 ‘다시 확인’ 단계에서 고치는 비율도 낮아집니다. 하위기준과 대안의 기본 인식은 연구 가설 수준의 값으로 고정되어 있습니다.</p></div>'+
+    '<div class="card"><h3>집단별 보기</h3><div class="toolbar" style="margin:0">'+simGroupDefs().map(function(d){return '<button class="btn sm'+(SIM.group===d[0]?' primary':'')+'" data-act="simGroup" data-g="'+d[0]+'">'+esc(d[1])+'</button>'}).join('')+'</div></div>'+
+    '<p class="muted" style="margin:0 0 12px">가상 응답 '+AD.resp.length+'명 · 통합에 포함 '+C.inc.length+'명</p>';
+}
+(function(){
+  var _head=HOOK.resultsHead;
+  HOOK.resultsHead=function(P,C){return FA.tab==='sim'?simHead(P,C):_head(P,C)};
+  var _faRender=faRender;
+  faRender=function(){if(FA.tab==='sim'){adTop();if(!SIM.ready)simGenerate();showResults(AD.P,SIM.resp.slice());faSaveSoon();return}_faRender()};
+  var _del=ACT.respDel;
+  ACT.respDel=function(t){if(FA.tab!=='sim')return _del(t);simSel(t.dataset.e,false);rerenderKeep()};
+})();
 ACT.demoFill=function(){
   var P=AD.P,M=matricesOf(P);if(blocking(P).length)return toast('먼저 1단계에서 모델을 완성하세요.',true);
   var names=(P.roster&&P.roster.length?P.roster.slice(0,4):['연습1','연습2','연습3','연습4']),text='';
